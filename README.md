@@ -34,12 +34,12 @@ python main.py
 
 Advanced Examples
 1. Analyze a specific expiry date with a wider moneyness band and 500 binomial steps:
-  python parity_verifier.py --ticker ^NDX --expiry 2024-01-19 --steps 500 --moneyness-band 0.20
+  python main.py --ticker ^NDX --expiry 2024-01-19 --steps 500 --moneyness-band 0.20
 
 2. Analyze an American-style equity option (e.g., AAPL), export to CSV, and plot the errors:
-  python parity_verifier.py --ticker AAPL --american --csv aapl_parity.csv --plot
+  python main.py --ticker AAPL --american --csv aapl_parity.csv --plot
 
 3. Manually override the risk-free rate and dividend yield:
-  python parity_verifier.py --ticker ^SPX --rate 0.0525 --dividend-yield 0.015
+  python main.py --ticker ^SPX --rate 0.0525 --dividend-yield 0.015
 
 🛠️ Command-Line ArgumentsArgumentDescriptionDefault--tickerUnderlying ticker symbol (prefer European-style like ^SPX).^SPX--expiryExpiry date YYYY-MM-DD.Nearest expiry--stepsNumber of steps in the CRR binomial tree.200--americanAllow early exercise pricing (American-style).False--moneyness-bandKeep strikes within +/- this fraction of the spot price.0.15--rateOverride the risk-free rate (decimal, e.g., 0.05).Auto-fetched from ^IRX--dividend-yieldOverride the continuous dividend yield (decimal).Auto-fetched--csvFile path to save the generated parity table as a CSV.None--plotGenerate and save a plot of Parity Error vs. Strike Price.False
