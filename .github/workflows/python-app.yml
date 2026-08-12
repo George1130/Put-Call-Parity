@@ -43,3 +43,9 @@ jobs:
 
     - name: Run Put-Call Parity Script
       run: python main.py --ticker ^SPX --csv ndx.csv
+      
+    - name: Upload CSV artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: parity-data-csv # This will be the name of the downloaded zip file
+        path: ndx.csv # The exact file to grab
