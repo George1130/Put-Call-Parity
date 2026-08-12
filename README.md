@@ -34,7 +34,7 @@ The script calculates the Left-Hand Side (C - P) for both the CRR Model and the 
 2. Install the required Python dependencies:
 
 ```bash
-pip install yfinance numpy pandas matplotlib
+pip install -r requirements.txt
 ```
 
 3. Run the Script:
