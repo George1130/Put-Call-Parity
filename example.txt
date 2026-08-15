@@ -1,5 +1,28 @@
-CLI Integrated Till Now 
+Put-Call Parity — working example commands
+==========================================
+
+CLI (put_call_parity.py)
+------------------------
+Interactive mode (prompts for quotes):
+    python put_call_parity.py
+
+Manual mode (all six inputs required):
+    python put_call_parity.py --spot 100 --strike 100 --rate 5 --t 0.5 --call 8 --put 5
+
+Manual mode with payoff diagram:
+    python put_call_parity.py --spot 100 --strike 100 --rate 5 --t 0.5 --call 8 --put 5 --plot
+
+Live market scan (nearest viable expiry):
+    python put_call_parity.py --ticker AAPL
+
+Live scan with options:
+    python put_call_parity.py --ticker AAPL --expiry 2026-09-18 --no-dividends --loose
+    python put_call_parity.py --ticker ^SPX --top 10
+    python put_call_parity.py --ticker ^NDX --rf 4.2 --top 8
+
+See full flag reference with:
+    python put_call_parity.py --help
+
+GUI (main.py — requires a graphical display)
+---------------------------------------------
     python main.py
-    python main.py --ticker ^SPX --steps 300 --plot
-    python main.py --ticker AAPL --american --expiry 2026-09-18
-    python main.py --ticker ^NDX --csv ndx_parity.csv
