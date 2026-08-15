@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Put-Call Parity Model</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header>
+  <h1>Put-Call Parity Model</h1>
+  <p class="sub">C + PV(K) + PV(D) = P + S &nbsp;|&nbsp; European options &nbsp;|&nbsp; live quotes from Yahoo Finance (yfinance)</p>
+</header>
+
+<main>
+
+  <!-- ================= Live market data ================= -->
+  <section class="card" id="live-card">
+    <h2>Live Market Data — Yahoo Finance</h2>
+    <div class="live-controls">
+      <label>Ticker
+        <input type="text" id="ticker" value="AAPL" spellcheck="false">
+      </label>
+      <button id="fetch-btn" {{ '' if has_live else 'disabled' }}>Fetch live quotes</button>
+      <label>Expiry
+        <select id="expiry" disabled><option>—</option></select>
+      </label>
+      <label class="check"><input type="checkbox" id="use-dividends" checked> dividends</label>
+      <span id="live-status" class="status"></span>
+    </div>
+    {% if not has_live %}
+    <p class="warn">yfinance is not installed — live data is disabled. Run
+      <code>pip install yfinance pandas</code> and restart the server.</p>
+    {% endif %}
+    <div class="table-wrap">
+      <table id="chain-table">
+        <thead>
+          <tr>
+            <th>Strike</th><th>Call</th><th>Put</th><th>Fair C</th><th>Fair P</th>
+            <th>MID Δ</th><th>NET Δ</th><th>OI c/p</th><th>Quotes</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="hint">Click any row to load that strike into the manual parity model below.</p>
+  </section>
+
+  <div class="columns">
+
+    <!-- ================= Manual inputs ================= -->
+    <section class="card" id="manual-card">
+      <h2>Market Inputs</h2>
+      <div class="inputs">
+        <label>Spot price S <input id="S" type="number" step="any" value="100.00"></label>
+        <label>Strike price K <input id="K" type="number" step="any" value="100.00"></label>
+        <label>Risk-free rate r (% p.a.) <input id="r" type="number" step="any" value="5.00"></label>
+        <label>Time to expiry T (years) <input id="T" type="number" step="any" value="0.5"></label>
+        <div class="side">
+          <label>Call price C <input id="C" type="number" step="any" value="8.00"></label>
+          <label>Put price P <input id="P" type="number" step="any" value="5.00"></label>
+        </div>
+      </div>
+      <p id="days-note" class="note"></p>
+      <div class="buttons">
+        <button id="example-btn">Load example</button>
+        <button id="fair-p-btn" class="green">Set P = fair</button>
+        <button id="fair-c-btn" class="green">Set C = fair</button>
+      </div>
+      <p class="hint small">Non-dividend model is PV(D)=0. Live rows adjust for expected
+        dividends. Values are per share (×100 per contract). Mid quotes;
+        NET = profit after crossing the bid/ask spread.</p>
+    </section>
+
+    <!-- ================= Results ================= -->
+    <section class="card" id="results-card">
+      <h2>Parity Check</h2>
+      <div class="stats">
+        <div class="stat"><span>PV(K) = K·e^(−rT)</span><b id="st-pvk">—</b></div>
+        <div class="stat"><span>r·T</span><b id="st-rt">—</b></div>
+        <div class="stat"><span>LEFT = C + PV(K)</span><b id="st-left">—</b></div>
+        <div class="stat"><span>RIGHT = P + S</span><b id="st-right">—</b></div>
+        <div class="stat"><span>Fair Put</span><b id="st-fairp">—</b></div>
+        <div class="stat"><span>Fair Call</span><b id="st-fairc">—</b></div>
+      </div>
+      <p id="verdict" class="verdict">Enter valid inputs (S, K, T &gt; 0; C, P ≥ 0).</p>
+      <pre id="trade" class="trade"></pre>
+    </section>
+  </div>
+
+  <!-- ================= Chart ================= -->
+  <section class="card" id="chart-card">
+    <h2>Payoff Diagram — riskless profit at expiry (all S_T)</h2>
+    <img id="chart" alt="Payoff diagram">
+  </section>
+
+</main>
+
+<footer>
+  <p>Educational / research only — not investment advice. Data: Yahoo Finance via yfinance.</p>
+</footer>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

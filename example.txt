@@ -26,3 +26,16 @@ See full flag reference with:
 GUI (main.py — requires a graphical display)
 ---------------------------------------------
     python main.py
+
+Web app (app.py — Flask, open http://127.0.0.1:5000)
+------------------------------------------------------
+    python app.py
+    PORT=8080 python app.py        # custom port
+
+Web API examples (curl):
+    curl -X POST http://127.0.0.1:5000/api/analyze \
+         -H "Content-Type: application/json" \
+         -d '{"S": 100, "K": 100, "r": 5, "T": 0.5, "C": 8, "P": 5}'
+    curl "http://127.0.0.1:5000/api/live?ticker=AAPL"
+    curl "http://127.0.0.1:5000/api/expirations?ticker=AAPL"
+    curl "http://127.0.0.1:5000/api/chart?S=100&K=100&r=5&T=0.5&C=8&P=5" -o payoff.png

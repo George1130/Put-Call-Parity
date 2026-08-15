@@ -27,12 +27,13 @@ where
 
 If the two sides are unequal beyond a tolerance, an arbitrage opportunity exists: sell the rich side, buy the cheap side, and lock in a riskless profit regardless of where the stock finishes.
 
-The project provides three ways to use this:
+The project provides four ways to use this:
 
 1. **Interactive CLI** — type in quotes by hand.
 2. **Manual CLI** — pass quotes as command-line arguments.
 3. **Live market scan** — pull the entire option chain from Yahoo Finance, scan every strike for parity violations, and rank them by profitability after transaction costs.
 4. **Desktop GUI** (Tkinter) — a visual app that combines manual analysis, live data, and a payoff chart.
+5. **Web app** (Flask) — the same analysis served in the browser: manual inputs, live chain scans, and the payoff diagram.
 
 ## Features
 
@@ -44,18 +45,21 @@ The project provides three ways to use this:
 - **Transaction-cost-aware screening**: computes `NET` profit after crossing the bid/ask spread on every leg — only positive-NET strikes are genuinely tradeable.
 - **Data-quality filtering**: flags quotes as `full` (two-sided on both options), `partial`, or `stale`, and excludes strikes with stale/mid-delta outliers by default (`--loose` to include them).
 - **Payoff diagram** (`--plot`): shows the flat riskless profit line, independent of the terminal spot.
-- **Both a CLI and a GUI**, sharing the same core model.
+- **A CLI, a GUI, and a web app**, all sharing the same core model.
 
 ## Repository Structure
 
 ```
 .
-├── main.py              # Tkinter desktop GUI
-├── put_call_parity.py   # Core parity model + CLI (manual & live scan)
-├── market_data.py       # Yahoo Finance helpers (spot, chain, rate, dividends)
-├── requirements.txt     # Python dependencies
-├── example.txt          # Example commands
-└── LICENSE              # MIT
+├── app.py              # Flask web app (API + serves the browser UI)
+├── templates/          # index.html — single-page web UI
+├── static/             # style.css, app.js — web UI assets
+├── main.py             # Tkinter desktop GUI
+├── put_call_parity.py  # Core parity model + CLI (manual & live scan)
+├── market_data.py      # Yahoo Finance helpers (spot, chain, rate, dividends)
+├── requirements.txt    # Python dependencies (includes Flask)
+├── example.txt         # Example commands
+└── LICENSE             # MIT
 ```
 
 ## Installation
@@ -135,6 +139,35 @@ A Tkinter window with:
 
 > Note: the GUI needs a graphical display (it won't run on a headless server without a display server / X forwarding).
 
+### 5. Web app (Flask)
+
+```bash
+python app.py
+```
+
+Then open <http://127.0.0.1:5000> in your browser. The page provides the same panels as the desktop GUI:
+
+- **Live data panel** — enter a ticker, fetch the option chain, switch expiries, click any row to load it into the model.
+- **Manual inputs** — adjust `S`, `K`, `r`, `T`, `C`, `P` with live recomputation as you type.
+- **Results panel** — `PV(K)`, left/right sides, fair call/put, verdict, and the arbitrage trade with per-leg cash flows.
+- **Payoff diagram** — rendered as a PNG by the server (`matplotlib`).
+
+Set the `PORT` environment variable to run on a different port (useful for Render, Railway, etc.):
+
+```bash
+PORT=8080 python app.py
+```
+
+HTTP API (useful for scripting or other frontends):
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/analyze` | POST | JSON `{S, K, r, T, C, P, pv_d}` → full parity result |
+| `/api/live` | GET | `?ticker=AAPL&expiry=YYYY-MM-DD&rf=4.2&dividends=0` → chain scan |
+| `/api/expirations` | GET | `?ticker=AAPL` → available expiration dates |
+| `/api/chart` | GET | `?S=&K=&r=&T=&C=&P=&pv_d=` → payoff diagram PNG |
+| `/api/health` | GET | server + live-data status |
+
 ## Command-Line Reference
 
 | Flag | Applies to | Default | Description |
@@ -187,6 +220,7 @@ A Tkinter window with:
 - **One price per expiry**: the scan uses the mid quote and a single `T` for all strikes; early-exercise and dividend timing effects per strike are not modeled.
 - **Not investment advice**: findings are for research/education. By the time quotes reach Yahoo and the model runs, any real edge is usually gone; treat "arbitrage available" as a market-data artifact until verified on a live feed with executable prices.
 - **GUI platform**: `main.py` requires a display environment (Tkinter); it won't run on headless servers without a virtual display.
+- **Web data freshness**: the Flask app fetches Yahoo quotes per request; heavy scanning can be slow on a remote host (Yahoo rate limits), so the browser UI is best used interactively rather than as a batch tool.
 
 ## Disclaimer
 

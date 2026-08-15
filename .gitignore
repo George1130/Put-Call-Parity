@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Flask / env
+.env
+.flaskenv
+
+# Outputs / data
+results/
+*.png
+*.csv
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
