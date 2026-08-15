@@ -31,30 +31,15 @@ The script calculates the Left-Hand Side (C - P) for both the CRR Model and the 
 ## 🚀 Installation
 
 1. Clone the repository to your local machine.
-2. Install the required Python dependencies:
+2. Create a virtual environment and Install the required Python dependencies:
 
 ```bash
+python -m venv venv
+source venv/bin/activate
 pip install -r requirements.txt
 ```
 
 3. Run the Script:
 ```
 python main.py
-```
-
-## Advanced Examples
-1. Analyze a specific expiry date with a wider moneyness band and 500 binomial steps:
-
-```bash
-python main.py --ticker ^NDX --expiry 2024-01-19 --steps 500 --moneyness-band 0.20
-```
-2. Analyze an American-style equity option (e.g., AAPL), export to CSV, and plot the errors:
-
-```bash
-python main.py --ticker AAPL --american --csv aapl_parity.csv --plot
-```
-
-3. Manually override the risk-free rate and dividend yield:
-```bash
-python main.py --ticker ^SPX --rate 0.0525 --dividend-yield 0.015
 ```
