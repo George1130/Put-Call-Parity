@@ -54,10 +54,11 @@ The project provides four ways to use this:
 ├── app.py              # Flask web app (API + serves the browser UI)
 ├── templates/          # index.html — single-page web UI
 ├── static/             # style.css, app.js — web UI assets
+├── render.yaml         # Render blueprint (free web service, auto-deploy)
 ├── main.py             # Tkinter desktop GUI
 ├── put_call_parity.py  # Core parity model + CLI (manual & live scan)
 ├── market_data.py      # Yahoo Finance helpers (spot, chain, rate, dividends)
-├── requirements.txt    # Python dependencies (includes Flask)
+├── requirements.txt    # Python dependencies (Flask, gunicorn, ...)
 ├── example.txt         # Example commands
 └── LICENSE             # MIT
 ```
@@ -167,6 +168,34 @@ HTTP API (useful for scripting or other frontends):
 | `/api/expirations` | GET | `?ticker=AAPL` → available expiration dates |
 | `/api/chart` | GET | `?S=&K=&r=&T=&C=&P=&pv_d=` → payoff diagram PNG |
 | `/api/health` | GET | server + live-data status |
+
+### 6. Deploy to Render (free, auto-deploys from GitHub)
+
+This repo ships a `render.yaml` blueprint — the fastest way to go live:
+
+1. Push this repo to GitHub.
+2. Go to [render.com](https://render.com) → **New → Blueprint** → connect the
+   `Put-Call-Parity` repo.
+3. Render reads `render.yaml` and creates the web service: Python 3.12, free plan,
+   `gunicorn` start command, health check on `/api/health`.
+4. Click **Apply** → after the build (~5 min) the app is live at
+   `https://put-call-parity.onrender.com` with free HTTPS. Every push to `main`
+   redeploys automatically.
+
+Alternatively, without the blueprint: **New → Web Service** → pick the repo →
+**Runtime: Python 3.12** → **Build:** `pip install -r requirements.txt` →
+**Start:** `gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 180`
+→ **Instance type: Free**.
+
+Notes:
+
+- The free plan spins down after ~15 min idle and takes 30–50 s to wake up on the
+  first visit after sleep (a Render loading page is shown meanwhile).
+- `PYTHON_VERSION` is pinned to 3.12 in `render.yaml` because newer default
+  runtimes can lack prebuilt wheels for pandas/numpy.
+- The 180 s gunicorn timeout keeps slow Yahoo Finance chain fetches from being
+  killed.
+- `app.py` already honors the `PORT` env var Render injects.
 
 ## Command-Line Reference
 

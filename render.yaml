@@ -1,0 +1,21 @@
+# Render blueprint — creates a free web service from this repo.
+# Deploy: render.com -> New -> Blueprint -> connect this GitHub repo -> Apply.
+#
+# Python 3.12 is pinned because newer default runtimes can lack prebuilt
+# wheels for pandas/numpy. The 180s gunicorn timeout keeps slow Yahoo
+# Finance chain fetches from being killed. `PORT` is injected by Render
+# and `app.py` already honors it.
+
+services:
+  - type: web
+    name: put-call-parity
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 180 --access-logfile -
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
