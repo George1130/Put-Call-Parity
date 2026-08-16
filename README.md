@@ -199,19 +199,12 @@ Notes:
 
 > **Yahoo rate limits (HTTP 429)**: Render's datacenter IPs are shared across
 > many apps, so Yahoo sometimes answers with `Too Many Requests. Rate limited.`
-> The web app mitigates this in `market_data.py`:
-> - fetched data is cached **in memory and on disk** (`/tmp` on Render, survives
->   free-plan spin-downs/restarts): expirations 15 min, option chains 2 min,
->   spot 1 min, ^IRX rate 1 h, dividends 6 h;
-> - 429 responses are retried with backoff (4 attempts, ~18 s worst case) and
->   Yahoo calls are paced/serialized so page loads don't arrive as a burst;
-> - if a 429 still wins but a recent copy exists on disk, the app **serves the
->   stale copy instead of erroring** (expirations up to 7 days old, chains/spot
->   up to 1 day);
-> - `yfinance>=1.6` is required for its curl_cffi browser TLS impersonation.
-> `/api/health` shows what's cached. After any one successful fetch, later
-> rate limits no longer break the page — worst case you see slightly stale
-> quotes.
+> The web app mitigates this in `market_data.py`: fetched data is cached
+> server-side (expirations 15 min, option chains 2 min, spot 1 min, ^IRX rate
+> 1 h, dividends 6 h), 429 responses are retried with a short backoff, and
+> `yfinance>=1.6` is required for its curl_cffi browser TLS impersonation.
+> `/api/health` shows what's currently cached. If the first fetch still fails,
+> simply wait a minute and retry — the next fetch is much cheaper.
 
 ## Command-Line Reference
 
