@@ -26,66 +26,257 @@ if HAS_YF:
 
 
 # ---------------------------------------------------------------------------
-# Small thread-safe TTL cache.
+# Thread-safe TTL cache, memory + disk.
 #
 # The web app is deployed on Render behind `gunicorn --workers 1 --threads 4`,
 # so one process serves everyone and a process-local cache is shared and safe.
 # Without caching, *every* page click fires several Yahoo Finance requests
 # (expirations, spot, chain, dividends, ^IRX) from Render's shared datacenter
 # IP, which Yahoo throttles with HTTP 429 ("Too Many Requests. Rate limited.").
-# Caching collapses those into a handful of requests per TTL window.
+#
+# Two layers:
+#   1. In-memory cache — fast path within a running process.
+#   2. Disk cache in /tmp (PCP_CACHE_DIR) — survives Render free-plan
+#      spin-downs and restarts, so repeat visitors never fetch cold.
+#
+# Plus a serve-stale fallback: if a fetch fails with a 429 but we hold recent
+# (possibly expired) data on disk, we serve that instead of erroring. Freshness
+# TTLs below decide when to re-fetch; the stale TTLs cap how old data may be
+# before we refuse to serve it during an outage.
 # ---------------------------------------------------------------------------
+
+import os
+import tempfile
 
 _CACHE: dict = {}
 _CACHE_LOCK = threading.Lock()
 
-# TTLs (seconds): how long each piece of data stays fresh. Quotes move, so the
-# chain is short-lived; expirations / dividends / the T-bill rate are stable.
+# Freshness TTLs (seconds): quotes move, so the chain is short-lived;
+# expirations / dividends / the T-bill rate are stable.
 TTL_RF = 3600.0          # ^IRX 13-week T-bill: ~1h
 TTL_EXPIRATIONS = 900.0  # option expirations list: ~15min
 TTL_SPOT = 60.0          # spot price: ~1min
 TTL_CHAIN = 120.0        # option chain (bids/asks): ~2min
 TTL_DIVIDENDS = 21600.0  # dividend schedule: ~6h
 
+# Stale-serving ceilings: how old a disk copy may be before we refuse to serve
+# it during a Yahoo outage / rate limit.
+STALE_RF = 7 * 86400.0        # 1 week
+STALE_EXPIRATIONS = 7 * 86400.0
+STALE_SPOT = 86400.0          # 1 day
+STALE_CHAIN = 86400.0         # 1 day
+STALE_DIVIDENDS = 30 * 86400.0
 
-def _cache_key(t):
-    """Stable cache key for a Ticker object (yfinance tickers are cheap to
-    rebuild but not hashable for long-lived caching)."""
-    return str(getattr(t, "ticker", t)).upper()
+STALE_GRACE = 60.0  # after serving stale, don't hammer Yahoo again for 1 min
 
 
-def _cached(key, ttl, producer):
-    """Return cached value or compute, store and return it. Failures are never
-    cached, so a transient error just falls through to the API error path."""
-    now = time.monotonic()
+def _cache_dir():
+    d = os.environ.get("PCP_CACHE_DIR") or os.path.join(
+        tempfile.gettempdir(), "put-call-parity-cache")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        pass
+    return d
+
+
+def _cache_file(key):
+    safe = "_".join(str(part).replace("/", "-") for part in key)
+    return os.path.join(_cache_dir(), safe + ".json")
+
+
+def _to_jsonable(v):
+    if isinstance(v, dict) and "__df__" in v:
+        return v  # already encoded
+    if isinstance(v, (dt.datetime, dt.date)):
+        return {"__date__": v.isoformat()}
+    if hasattr(v, "to_json") and hasattr(v, "columns"):  # pandas DataFrame
+        return {"__df__": True, "data": v.to_json(orient="split")}
+    if isinstance(v, tuple):
+        return [_to_jsonable(x) for x in v]
+    if isinstance(v, list):
+        return [_to_jsonable(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _to_jsonable(x) for k, x in v.items()}
+    return v
+
+
+def _from_jsonable(v):
+    if isinstance(v, dict) and v.get("__df__"):
+        # read_json treats single-line JSON strings as file paths; wrap in
+        # StringIO so the split-orient payload is parsed as data.
+        import io
+        import pandas as pd
+        return pd.read_json(io.StringIO(v["data"]), orient="split")
+    if isinstance(v, dict) and "__date__" in v:
+        s = v["__date__"]
+        try:
+            return dt.date.fromisoformat(s)
+        except ValueError:
+            return dt.datetime.fromisoformat(s)
+    if isinstance(v, list):
+        return [_from_jsonable(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _from_jsonable(x) for k, x in v.items()}
+    return v
+
+
+def _disk_load(key):
+    """Read a cache entry from disk. Returns dict(value, fetched_at,
+    expires_at) or None. Expired entries are still returned — the caller
+    decides whether to serve them stale."""
+    import json
+    path = _cache_file(key)
+    try:
+        with open(path, "r") as f:
+            raw = json.load(f)
+        return {
+            "value": _from_jsonable(raw["value"]),
+            "fetched_at": float(raw["fetched_at"]),
+            "expires_at": float(raw["expires_at"]),
+        }
+    except (OSError, ValueError, KeyError, TypeError):
+        try:
+            os.unlink(path)  # drop corrupt entries
+        except OSError:
+            pass
+        return None
+
+
+def _disk_save(key, value, expires_at):
+    """Atomically write a cache entry to disk (tmp file + rename).
+
+    Best-effort: the in-memory cache is the critical path, so any disk
+    problem (full /tmp, exotic value, permissions) is logged, not raised."""
+    import json
+    path = _cache_file(key)
+    try:
+        payload = json.dumps({
+            "fetched_at": time.time(),
+            "expires_at": expires_at,
+            "value": _to_jsonable(value),
+        })
+        tmp = path + f".tmp{os.getpid()}"
+        with open(tmp, "w") as f:
+            f.write(payload)
+        os.replace(tmp, path)
+    except (OSError, TypeError, ValueError) as exc:
+        logging.getLogger(__name__).warning("disk cache write failed: %s", exc)
+        try:
+            os.unlink(tmp)
+        except (OSError, NameError):
+            pass
+    _prune_disk()
+
+
+_last_prune = [0.0]
+
+
+def _prune_disk():
+    """Drop entries older than 31 days; at most once per hour."""
+    now = time.time()
+    if now - _last_prune[0] < 3600.0:
+        return
+    _last_prune[0] = now
+    try:
+        cutoff = now - 31 * 86400.0
+        for name in os.listdir(_cache_dir()):
+            path = os.path.join(_cache_dir(), name)
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.unlink(path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _cached(key, ttl, stale_ttl, producer):
+    """Return cached data or fetch+store it.
+
+    Priority: fresh memory -> fresh disk -> fetch (with retry) -> stale disk.
+    Failures that are NOT rate limits propagate immediately; only a 429 can
+    trigger the serve-stale fallback.
+    """
+    key_s = str(key)
+    now_m = time.monotonic()
     with _CACHE_LOCK:
-        entry = _CACHE.get(key)
-        if entry is not None and entry[0] > now:
+        entry = _CACHE.get(key_s)
+        if entry is not None and entry[0] > now_m:
             return entry[1]
-    value = producer()
+
+    now_t = time.time()
+    disk = _disk_load(key)
+    if disk is not None and disk["expires_at"] > now_t:
+        with _CACHE_LOCK:
+            _CACHE[key_s] = (now_m + (disk["expires_at"] - now_t), disk["value"])
+        return disk["value"]
+
+    try:
+        value = producer()
+    except Exception as exc:
+        if (_is_rate_limit(exc) and disk is not None
+                and (now_t - disk["fetched_at"]) <= stale_ttl):
+            # Yahoo is throttling us; serve recent data instead of failing.
+            with _CACHE_LOCK:
+                _CACHE[key_s] = (time.monotonic() + STALE_GRACE, disk["value"])
+            return disk["value"]
+        raise
+
+    expires_t = now_t + ttl
     with _CACHE_LOCK:
-        _CACHE[key] = (time.monotonic() + ttl, value)
+        _CACHE[key_s] = (time.monotonic() + ttl, value)
+    _disk_save(key, value, expires_t)
     return value
 
 
 def cache_info():
-    """Seconds remaining per cache key — surfaced in /api/health."""
-    now = time.monotonic()
+    """Cache state for /api/health: memory entries + disk file count."""
+    now_m = time.monotonic()
     with _CACHE_LOCK:
-        return {str(k): int(exp - now) for k, (exp, _) in _CACHE.items()}
+        mem = {k: int(exp - now_m) for k, (exp, _) in _CACHE.items()}
+    try:
+        disk_files = len([n for n in os.listdir(_cache_dir())
+                          if n.endswith(".json")])
+    except OSError:
+        disk_files = 0
+    return {"memory": mem, "disk_files": disk_files}
 
 
-def _rate_limited(producer, attempts=3, base_delay=2.0):
-    """Retry a Yahoo call that hit the 429 rate limit with a short backoff.
+def _is_rate_limit(exc):
+    """True for yfinance's YFRateLimitError (any version) or 429-looking text."""
+    if type(exc).__name__ == "YFRateLimitError":
+        return True
+    msg = str(exc)
+    return "Too Many Requests" in msg or "Rate limit" in msg
 
-    yfinance only auto-retries network timeouts, not HTTP 429s. A brief wait
-    often clears the limit because Render egress IPs are shared and bursts of
-    concurrent apps can trip it momentarily.
+
+# --- Yahoo call pacing ------------------------------------------------------
+# Render free instances share egress IPs with many apps. Serialize our Yahoo
+# requests (one process, 4 gunicorn threads) with a tiny delay between them so
+# a page load doesn't arrive as a burst that trips the rate limiter.
+
+_YF_LOCK = threading.Lock()
+_YF_PACE = 0.25  # seconds between Yahoo calls
+
+
+def _yf_call(producer):
+    with _YF_LOCK:
+        time.sleep(_YF_PACE)
+        return producer()
+
+
+def _rate_limited(producer, attempts=4, base_delay=3.0):
+    """Retry a Yahoo call that hit the 429 rate limit with a backoff.
+
+    yfinance only auto-retries network timeouts, not HTTP 429s. A shared-IP
+    rate limit usually clears within seconds; 4 attempts = ~18s worst case.
+    Retry sleeps happen OUTSIDE _YF_LOCK so other threads can keep working.
     """
     from yfinance.exceptions import YFRateLimitError
     for attempt in range(attempts):
         try:
-            return producer()
+            return _yf_call(producer)
         except YFRateLimitError:
             if attempt == attempts - 1:
                 raise
@@ -99,9 +290,16 @@ def _require_yf():
             "    ./venv/bin/pip install yfinance pandas")
 
 
+def _cache_key(t):
+    """Stable cache key for a Ticker object (yfinance tickers are cheap to
+    rebuild but not hashable for long-lived caching)."""
+    return str(getattr(t, "ticker", t)).upper()
+
+
 def get_rf_rate():
     """Risk-free proxy: 13-week T-bill (^IRX) yield, as a fraction. Returns (rate, source)."""
-    return _cached(("rf",), TTL_RF, _fetch_rf_rate)
+    return _cached(("rf",), TTL_RF, STALE_RF,
+                   lambda: _rate_limited(_fetch_rf_rate))
 
 
 def _fetch_rf_rate():
@@ -130,7 +328,7 @@ def get_ticker(ticker):
 
 def get_spot(t):
     """Returns (price, bid, ask, currency) or (None,)*3."""
-    return _cached(("spot", _cache_key(t)), TTL_SPOT,
+    return _cached(("spot", _cache_key(t)), TTL_SPOT, STALE_SPOT,
                    lambda: _rate_limited(lambda: _fetch_spot(t)))
 
 
@@ -160,7 +358,7 @@ def _fetch_spot(t):
 
 
 def get_expirations(t):
-    return _cached(("exp", _cache_key(t)), TTL_EXPIRATIONS,
+    return _cached(("exp", _cache_key(t)), TTL_EXPIRATIONS, STALE_EXPIRATIONS,
                    lambda: _rate_limited(lambda: _fetch_expirations(t)))
 
 
@@ -169,7 +367,7 @@ def _fetch_expirations(t):
 
 
 def get_chain(t, expiry):
-    return _cached(("chain", _cache_key(t), expiry), TTL_CHAIN,
+    return _cached(("chain", _cache_key(t), expiry), TTL_CHAIN, STALE_CHAIN,
                    lambda: _rate_limited(lambda: _fetch_chain(t, expiry)))
 
 
@@ -180,7 +378,7 @@ def _fetch_chain(t, expiry):
 
 def dividend_profile(t):
     """Infer dividend schedule from history. Returns dict or None."""
-    return _cached(("div", _cache_key(t)), TTL_DIVIDENDS,
+    return _cached(("div", _cache_key(t)), TTL_DIVIDENDS, STALE_DIVIDENDS,
                    lambda: _rate_limited(lambda: _fetch_dividend_profile(t)))
 
 

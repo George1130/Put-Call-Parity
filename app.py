@@ -90,8 +90,10 @@ def _friendly_rate_limit(exc):
     """Make Yahoo's 429 ('Too Many Requests') errors actionable in the UI."""
     msg = str(exc)
     if "Too Many Requests" in msg or "Rate limit" in msg:
-        return ("Yahoo Finance is rate-limiting this server's IP. Wait a minute "
-                "and retry — successful fetches are cached server-side.")
+        return ("Yahoo Finance is rate-limiting this server's IP right now. "
+                "Wait a minute and retry — once any ticker fetch succeeds it "
+                "is cached server-side (memory + disk) and served even during "
+                "future rate limits.")
     return msg
 
 
