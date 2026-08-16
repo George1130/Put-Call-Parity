@@ -4,6 +4,8 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import math
+import threading
+import time
 
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
@@ -13,6 +15,81 @@ try:
 except ImportError:
     yf = None
     HAS_YF = False
+
+# Retry transient network errors (timeouts / dropped connections). yfinance
+# does not retry HTTP 429 rate limits by itself — see _rate_limited() below.
+if HAS_YF:
+    try:
+        yf.config.network.retries = 3
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# Small thread-safe TTL cache.
+#
+# The web app is deployed on Render behind `gunicorn --workers 1 --threads 4`,
+# so one process serves everyone and a process-local cache is shared and safe.
+# Without caching, *every* page click fires several Yahoo Finance requests
+# (expirations, spot, chain, dividends, ^IRX) from Render's shared datacenter
+# IP, which Yahoo throttles with HTTP 429 ("Too Many Requests. Rate limited.").
+# Caching collapses those into a handful of requests per TTL window.
+# ---------------------------------------------------------------------------
+
+_CACHE: dict = {}
+_CACHE_LOCK = threading.Lock()
+
+# TTLs (seconds): how long each piece of data stays fresh. Quotes move, so the
+# chain is short-lived; expirations / dividends / the T-bill rate are stable.
+TTL_RF = 3600.0          # ^IRX 13-week T-bill: ~1h
+TTL_EXPIRATIONS = 900.0  # option expirations list: ~15min
+TTL_SPOT = 60.0          # spot price: ~1min
+TTL_CHAIN = 120.0        # option chain (bids/asks): ~2min
+TTL_DIVIDENDS = 21600.0  # dividend schedule: ~6h
+
+
+def _cache_key(t):
+    """Stable cache key for a Ticker object (yfinance tickers are cheap to
+    rebuild but not hashable for long-lived caching)."""
+    return str(getattr(t, "ticker", t)).upper()
+
+
+def _cached(key, ttl, producer):
+    """Return cached value or compute, store and return it. Failures are never
+    cached, so a transient error just falls through to the API error path."""
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        entry = _CACHE.get(key)
+        if entry is not None and entry[0] > now:
+            return entry[1]
+    value = producer()
+    with _CACHE_LOCK:
+        _CACHE[key] = (time.monotonic() + ttl, value)
+    return value
+
+
+def cache_info():
+    """Seconds remaining per cache key — surfaced in /api/health."""
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        return {str(k): int(exp - now) for k, (exp, _) in _CACHE.items()}
+
+
+def _rate_limited(producer, attempts=3, base_delay=2.0):
+    """Retry a Yahoo call that hit the 429 rate limit with a short backoff.
+
+    yfinance only auto-retries network timeouts, not HTTP 429s. A brief wait
+    often clears the limit because Render egress IPs are shared and bursts of
+    concurrent apps can trip it momentarily.
+    """
+    from yfinance.exceptions import YFRateLimitError
+    for attempt in range(attempts):
+        try:
+            return producer()
+        except YFRateLimitError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(base_delay * (attempt + 1))
 
 
 def _require_yf():
@@ -24,6 +101,10 @@ def _require_yf():
 
 def get_rf_rate():
     """Risk-free proxy: 13-week T-bill (^IRX) yield, as a fraction. Returns (rate, source)."""
+    return _cached(("rf",), TTL_RF, _fetch_rf_rate)
+
+
+def _fetch_rf_rate():
     _require_yf()
     try:
         irx = yf.Ticker("^IRX")
@@ -49,6 +130,11 @@ def get_ticker(ticker):
 
 def get_spot(t):
     """Returns (price, bid, ask, currency) or (None,)*3."""
+    return _cached(("spot", _cache_key(t)), TTL_SPOT,
+                   lambda: _rate_limited(lambda: _fetch_spot(t)))
+
+
+def _fetch_spot(t):
     price = bid = ask = None
     cur = "USD"
     try:
@@ -74,16 +160,31 @@ def get_spot(t):
 
 
 def get_expirations(t):
+    return _cached(("exp", _cache_key(t)), TTL_EXPIRATIONS,
+                   lambda: _rate_limited(lambda: _fetch_expirations(t)))
+
+
+def _fetch_expirations(t):
     return list(t.options)
 
 
 def get_chain(t, expiry):
+    return _cached(("chain", _cache_key(t), expiry), TTL_CHAIN,
+                   lambda: _rate_limited(lambda: _fetch_chain(t, expiry)))
+
+
+def _fetch_chain(t, expiry):
     oc = t.option_chain(expiry)
     return oc.calls, oc.puts
 
 
 def dividend_profile(t):
     """Infer dividend schedule from history. Returns dict or None."""
+    return _cached(("div", _cache_key(t)), TTL_DIVIDENDS,
+                   lambda: _rate_limited(lambda: _fetch_dividend_profile(t)))
+
+
+def _fetch_dividend_profile(t):
     try:
         divs = t.get_dividends()
     except Exception:

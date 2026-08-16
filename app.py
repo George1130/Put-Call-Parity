@@ -86,6 +86,15 @@ def _bad(msg, code=400):
     return jsonify({"error": msg}), code
 
 
+def _friendly_rate_limit(exc):
+    """Make Yahoo's 429 ('Too Many Requests') errors actionable in the UI."""
+    msg = str(exc)
+    if "Too Many Requests" in msg or "Rate limit" in msg:
+        return ("Yahoo Finance is rate-limiting this server's IP. Wait a minute "
+                "and retry — successful fetches are cached server-side.")
+    return msg
+
+
 # ----------------------------------------------------------------------
 # Manual parity analysis
 # ----------------------------------------------------------------------
@@ -131,7 +140,7 @@ def api_expirations():
             return _bad(f"No listed options for {ticker!r}.", 404)
         return jsonify({"ticker": ticker, "expirations": sorted(exps)})
     except Exception as exc:
-        return _bad(f"Could not fetch expirations: {exc}", 502)
+        return _bad(f"Could not fetch expirations: {_friendly_rate_limit(exc)}", 502)
 
 
 @app.get("/api/live")
@@ -153,7 +162,7 @@ def api_live():
     except ValueError:
         return _bad("rf must be a number (percent p.a.).")
     except Exception as exc:
-        return _bad(f"Live data error: {exc}", 502)
+        return _bad(f"Live data error: {_friendly_rate_limit(exc)}", 502)
 
     # Trim the payload: the UI needs the same fields as the GUI table.
     rows = []
@@ -243,7 +252,8 @@ def index():
 
 @app.get("/api/health")
 def health():
-    return jsonify({"ok": True, "live_data": HAS_LIVE})
+    cache = market_data.cache_info() if HAS_LIVE else {}
+    return jsonify({"ok": True, "live_data": HAS_LIVE, "cache": cache})
 
 
 if __name__ == "__main__":

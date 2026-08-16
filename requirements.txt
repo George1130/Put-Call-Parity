@@ -1,6 +1,9 @@
 flask
 gunicorn
-yfinance
+# yfinance >= 1.6 required: uses curl_cffi browser TLS impersonation, which
+# avoids most of Yahoo's TLS-fingerprint-based rate limiting (HTTP 429) that
+# hits datacenter IPs like Render's.
+yfinance>=1.6.0
 numpy
 pandas
 matplotlib
